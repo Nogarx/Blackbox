@@ -24,6 +24,7 @@
 
 import os
 import ray
+import time
 import requests
 import numpy as np
 from ray.experimental.tqdm_ray import tqdm
@@ -106,6 +107,8 @@ class BlackBoxBot:
     - stepsize: number of consecutive transitions requested. Sizes larger than 1 may produce transitions that are harder to track. default: \"1\"
     - prewarm: number of transitions before starting to record data. default: \"0\"
     - worker_id: number designed to this specific worker. default: \"0\"
+    - revert: indicates whether the bot should return to the initial_state or not. default: True
+    - reset_after_step: indicates whether the bot should reset the blackbox after taking a step. default: False
 
     Output:
     - data: this worker returns a numpy array with the shape (size, 2, 20, 20). Where the axis 0 denotes the requested transitions, the axis 1, the prior and
@@ -117,7 +120,10 @@ class BlackBoxBot:
     - collect(): start the data collection process.
     """
 
-    def __init__(self, size, output_folder='./', stepsize=1, prewarm=0, worker_id=0):
+    def __init__(self, size, output_folder='./', stepsize=1, prewarm=0,  revert=True, reset_after_step=False, worker_id=0):
+        assert not (revert and reset_after_step), '"revert" and "reset_after_step" cannot be True at the since time.'
+        self._reset_after_step = reset_after_step
+        self._revert = revert
         self._worker_id = worker_id
         self._size = size
         self._prewarm = prewarm
@@ -127,34 +133,44 @@ class BlackBoxBot:
         self._url = 'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php'
         self._step_url = f'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php?cycles={stepsize}'
         self._revert_url = f'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php?revert={stepsize}&cycles_input={stepsize}'
+        self._reset_url = f'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php?reset=1'
         self._map_dict = ORG_MAP
         self._map = lambda x : np.vectorize(self._map_dict.get)(x)
         # Initialize bot
+        self._session = requests.Session()
         self.reset()
 
-    def reset(self): 
+    def reset(self, clear_buffer=True): 
         # Clear buffer
-        self._data = np.zeros((self._size, 2, 20, 20), dtype=int)
+        if clear_buffer:
+            self._data = np.zeros((self._size, 2, 20, 20), dtype=int)
         # Start the session
-        self._session = requests.Session()
-        self._session.get(self._url)
+        request = self._session.get(self._reset_url)
         progress_bar = tqdm(desc=f'Prewarming', total=self._size, position=self._worker_id)
         for s in range(self._prewarm):
-            self._session.get(self._step_url)
+            request = self._session.get(self._step_url)
             progress_bar.update(1)
+        self._parser.clear()
+        self._parser.feed(request.text)
+            
         
     def _step(self, s): 
+        # Save prior state
+        self._data[s,0] = self._map(self._parser.blackbox())
         # Forward step
         request = self._session.get(self._step_url)
+        # Save posterior state
         self._parser.clear()
         self._parser.feed(request.text)
         self._data[s,1] = self._map(self._parser.blackbox())
-        # Backward step
-        request = self._session.get(self._revert_url)
-        self._parser.clear()
-        self._parser.feed(request.text)
-        self._data[s,0] = self._map(self._parser.blackbox())
-
+        # Perform a revert or reset step if neccesary
+        if self._revert:
+            request = self._session.get(self._revert_url)
+            self._parser.clear()
+            self._parser.feed(request.text)
+        elif self._reset_after_step:
+            self.reset(clear_buffer=False)
+    
     def _save_to_numpy(self):
         filename = f'blackbox_1_step_{int(datetime.now().timestamp())}_bot_{self._worker_id}'
         path = os.path.join(self._output_folder, filename)
@@ -178,13 +194,13 @@ class BotsHandler():
 
     Wrapper class used to manage multiple Blackbox Bots at the same time.
     """
-    def __init__(self, size, num_workers, output_folder='./', stepsize=1, prewarm=0):
+    def __init__(self, size, num_workers, output_folder='./', stepsize=1, prewarm=0, revert=True, reset_after_step=False):
         # Create directory if do not exists
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
         # Create workers
         self._num_workers = num_workers
-        self._workers = [BlackBoxBot.remote(size, output_folder=output_folder, stepsize=stepsize, prewarm=prewarm, worker_id=i) for i in range(self._num_workers)]
+        self._workers = [BlackBoxBot.remote(size, output_folder=output_folder, stepsize=stepsize, prewarm=prewarm, revert=revert, reset_after_step=reset_after_step, worker_id=i) for i in range(self._num_workers)]
 
 
     def collect(self):
