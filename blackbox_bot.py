@@ -39,6 +39,9 @@ ORG_MAP = {'bru': 0, 'gru': 1, 'hkg': 2, 'icn': 3, 'jfk': 4, 'las': 5, 'lax': 6,
 INV_MAP = {0: 'bru',  1: 'gru', 2: 'hkg', 3: 'icn', 4: 'jfk', 5: 'las', 6: 'lax', 7: 'lis', 8: 'mex', 9: 'pty'}
 COLOR_MAP = {0: '#999933',  1: '#000000', 2: '#CC6677', 3: '#882255', 4: '#44AA99', 5: '#4141FF', 6: '#117733', 7: '#AA4499', 8: '#FFFFFF', 9: '#88CCEE'}
 
+TRUE_MAP = {1:0, 9:1, 4:2, 6:3, 5:4, 7:5, 0:6, 2:7, 3:8, 8:9}
+TRUE_COLOR_MAP = {6: '#999933',  0: '#000000', 7: '#CC6677', 8: '#882255', 2: '#44AA99', 4: '#4141FF', 3: '#117733', 5: '#AA4499', 9: '#FFFFFF', 1: '#88CCEE'}
+
 #-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------#
 
 def get_blackbox_cmap():
@@ -67,11 +70,14 @@ class BlackboxParser(HTMLParser):
         self._row = []
 
     def handle_starttag(self, tag, attrs):
+        if tag == 'div':
+            for a in attrs:
+                if a[0] == 'id' and a[0] == 'controls':
+                    print(attrs)
+
         if tag == 'td':
             for a in attrs:
-                #print(a)
                 if a[0] == 'class':
-                    #print(a[1])
                     self._row.append(a[1])
                     break
 
@@ -132,8 +138,9 @@ class BlackBoxBot:
         self._output_folder = output_folder
         self._url = 'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php'
         self._step_url = f'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php?cycles={stepsize}'
+        self._prewarm_url = f'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php?cycles={prewarm}'
         self._revert_url = f'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php?revert={stepsize}&cycles_input={stepsize}'
-        self._reset_url = f'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php?reset=1'
+        self._reset_url = f'https://casci.binghamton.edu/academics/ssie501/blackbox/BlackBox.php?reset=1&cycles_input={stepsize}'
         self._map_dict = ORG_MAP
         self._map = lambda x : np.vectorize(self._map_dict.get)(x)
         # Initialize bot
@@ -146,14 +153,11 @@ class BlackBoxBot:
             self._data = np.zeros((self._size, 2, 20, 20), dtype=int)
         # Start the session
         request = self._session.get(self._reset_url)
-        progress_bar = tqdm(desc=f'Prewarming', total=self._size, position=self._worker_id)
-        for s in range(self._prewarm):
-            request = self._session.get(self._step_url)
-            progress_bar.update(1)
+        if self._prewarm > 0:
+            request = self._session.get(self._prewarm_url)
         self._parser.clear()
         self._parser.feed(request.text)
-            
-        
+
     def _step(self, s): 
         # Save prior state
         self._data[s,0] = self._map(self._parser.blackbox())
